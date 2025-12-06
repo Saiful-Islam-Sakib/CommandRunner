@@ -1,0 +1,252 @@
+#!/bin/bash
+
+# === CONFIGURATION ===
+COMMAND_FILE="$HOME/.command_runner_list"
+COLOR_MODE=0
+HISTORY_FILE="$HOME/.command_runner_history.log"
+
+# === PARSE FLAGS ===
+if [[ "$1" == "-c" || "$1" == "--color" ]]; then
+    COLOR_MODE=1
+fi
+
+# === COLORS AND ICONS ===
+if [[ $COLOR_MODE -eq 1 ]]; then
+    GREEN="\033[0;32m"
+    RED="\033[0;31m"
+    YELLOW="\033[1;33m"
+    CYAN="\033[0;36m"
+    RESET="\033[0m"
+else
+    GREEN=""
+    RED=""
+    YELLOW=""
+    CYAN=""
+    RESET=""
+fi
+
+# === UTILITY: ENSURE COMMAND FILE EXISTS ===
+ensure_command_file() {
+    touch "$COMMAND_FILE"
+}
+
+# === DISPLAY MENU ===
+show_menu() {
+    mapfile -t entries < "$COMMAND_FILE"
+    echo -e "\n${CYAN}Available Commands:${RESET}"
+
+    if [[ ${#entries[@]} -eq 0 ]]; then
+        echo "  (No commands found)"
+    else
+        for i in "${!entries[@]}"; do
+            IFS='|' read -r label cmd <<< "${entries[i]}"
+            echo -e "  ${CYAN}[$((i+1))] ${YELLOW}${label}${RESET} => ${GREEN}${cmd}${RESET}"
+        done
+    fi
+
+    echo -e "\n${CYAN}Menu Options:${RESET}"
+    echo -e "  ${CYAN}[a] ${YELLOW}Add${RESET}"
+    echo -e "  ${CYAN}[r] ${YELLOW}Remove${RESET}"
+    echo -e "  ${CYAN}[e] ${YELLOW}Edit${RESET}"
+    echo -e "  ${CYAN}[o] ${YELLOW}Reorder${RESET}"
+    echo -e "  ${CYAN}[q] ${YELLOW}Quit${RESET}"
+}
+
+# === RUN COMMANDS BY INDEX ===
+run_commands() {
+    mapfile -t entries < "$COMMAND_FILE"
+
+    for idx in "$@"; do
+        if [[ "$idx" =~ ^[0-9]+$ ]] && (( idx >= 1 && idx <= ${#entries[@]} )); then
+            IFS='|' read -r label cmd <<< "${entries[idx-1]}"
+            echo -e "\n${GREEN}Running: $label${RESET}"
+            echo "Command: $cmd"
+            eval "$cmd"
+
+            # Log usage
+            echo "$(date '+%Y-%m-%d %H:%M:%S') | $label | $cmd" >> "$HISTORY_FILE"
+        else
+            echo -e "${RED}Invalid option: $idx${RESET}"
+        fi
+    done
+}
+
+# === ADD A NEW COMMAND ===
+add_command() {
+    read -rp "Enter a label for the new command: " label
+    read -rp "Enter the command to execute: " cmd
+    if [[ -n "$label" && -n "$cmd" ]]; then
+        echo "$label|$cmd" >> "$COMMAND_FILE"
+        echo -e "${GREEN}Command added successfully.${RESET}"
+    else
+        echo -e "${RED}Both label and command are required.${RESET}"
+    fi
+}
+
+# === REMOVE ONE OR MORE COMMANDS ===
+remove_command() {
+    mapfile -t entries < "$COMMAND_FILE"
+
+    if [[ ${#entries[@]} -eq 0 ]]; then
+        echo -e "${YELLOW}No commands to remove.${RESET}"
+        return
+    fi
+
+    echo -e "\n${CYAN}Commands:${RESET}"
+    for i in "${!entries[@]}"; do
+        IFS='|' read -r label cmd <<< "${entries[i]}"
+        echo -e "  [$((i+1))] ${GREEN}${label}${RESET}"
+        echo -e "       ${cmd}"
+    done
+
+    read -rp "Enter command numbers to remove (space-separated): " -a rm_indices
+
+    echo -e "\n${RED}You are about to remove:${RESET}"
+    for idx in "${rm_indices[@]}"; do
+        if [[ "$idx" =~ ^[0-9]+$ ]] && (( idx >= 1 && idx <= ${#entries[@]} )); then
+            IFS='|' read -r label cmd <<< "${entries[idx-1]}"
+            echo "  [$idx] $label - $cmd"
+        fi
+    done
+
+    read -rp "Confirm removal? (y/N): " confirm
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        for idx in "${rm_indices[@]}"; do
+            if [[ "$idx" =~ ^[0-9]+$ ]] && (( idx >= 1 && idx <= ${#entries[@]} )); then
+                unset 'entries[idx-1]'
+            fi
+        done
+        printf "%s\n" "${entries[@]}" > "$COMMAND_FILE"
+        echo -e "${GREEN}Selected commands removed.${RESET}"
+    else
+        echo -e "${YELLOW}Removal cancelled.${RESET}"
+    fi
+}
+
+# === EDIT EXISTING COMMAND ===
+edit_command() {
+    mapfile -t entries < "$COMMAND_FILE"
+
+    if [[ ${#entries[@]} -eq 0 ]]; then
+        echo -e "${YELLOW}No commands to edit.${RESET}"
+        return
+    fi
+
+    echo -e "\n${CYAN}Commands:${RESET}"
+    for i in "${!entries[@]}"; do
+        IFS='|' read -r label cmd <<< "${entries[i]}"
+        echo -e "  [$((i+1))] ${GREEN}${label}${RESET}"
+        echo -e "       ${cmd}"
+    done
+
+    read -rp "Enter the command number to edit: " idx
+
+    if ! [[ "$idx" =~ ^[0-9]+$ ]] || (( idx < 1 || idx > ${#entries[@]} )); then
+        echo -e "${RED}Invalid command number.${RESET}"
+        return
+    fi
+
+    IFS='|' read -r old_label old_cmd <<< "${entries[idx-1]}"
+
+    echo -e "\nEditing command [$idx]: ${GREEN}${old_label}${RESET}"
+
+    # Pre-filled input using -e -i (bash >= 4)
+    read -e -i "$old_label" -p "New label: " new_label
+    read -e -i "$old_cmd" -p "New command: " new_cmd
+
+    entries[idx-1]="$new_label|$new_cmd"
+    printf "%s\n" "${entries[@]}" > "$COMMAND_FILE"
+    echo -e "${GREEN}Command updated successfully.${RESET}"
+}
+
+# === REORDER COMMANDS ===
+reorder_command() {
+    mapfile -t entries < "$COMMAND_FILE"
+
+    if [[ ${#entries[@]} -lt 2 ]]; then
+        echo -e "${YELLOW}Not enough commands to reorder.${RESET}"
+        return
+    fi
+
+    echo -e "\n${CYAN}Commands:${RESET}"
+    for i in "${!entries[@]}"; do
+        IFS='|' read -r label cmd <<< "${entries[i]}"
+        echo -e "  [$((i+1))] ${GREEN}${label}${RESET}"
+        echo -e "       ${cmd}"
+    done
+
+    read -rp "Enter the command number to move: " from_idx
+    if ! [[ "$from_idx" =~ ^[0-9]+$ ]] || (( from_idx < 1 || from_idx > ${#entries[@]} )); then
+        echo -e "${RED}Invalid command number.${RESET}"
+        return
+    fi
+
+    read -rp "Enter the new position (1-${#entries[@]}): " to_idx
+    if ! [[ "$to_idx" =~ ^[0-9]+$ ]] || (( to_idx < 1 || to_idx > ${#entries[@]} )); then
+        echo -e "${RED}Invalid new position.${RESET}"
+        return
+    fi
+
+    # Remove element from old position and insert at new position
+    local element="${entries[from_idx-1]}"
+    unset 'entries[from_idx-1]'
+    # Rebuild array after unset to avoid holes
+    entries=("${entries[@]}")
+
+    # Insert element at new position
+    local new_entries=()
+    for ((i=0; i<${#entries[@]}+1; i++)); do
+        if (( i == to_idx - 1 )); then
+            new_entries+=("$element")
+        fi
+        if (( i < ${#entries[@]} )); then
+            new_entries+=("${entries[i]}")
+        fi
+    done
+
+    entries=("${new_entries[@]}")
+
+    printf "%s\n" "${entries[@]}" > "$COMMAND_FILE"
+    echo -e "${GREEN}Command moved from position $from_idx to $to_idx.${RESET}"
+}
+
+# === MAIN FUNCTION ===
+main() {
+    ensure_command_file
+
+    # Auto-run first command if present
+    # if [[ ! -s "$COMMAND_FILE" ]]; then
+    #     echo -e "${YELLOW}No commands found to auto-run.${RESET}"
+    # else
+    #     first_line=$(head -n 1 "$COMMAND_FILE")
+    #     if [[ -n "$first_line" ]]; then
+    #         IFS='|' read -r label cmd <<< "$first_line"
+    #         echo -e "Auto-running: ${GREEN}${label}${RESET}"
+    #         echo "Command: $cmd"
+    #         eval "$cmd"
+
+    #         # Log usage
+    #         echo "$(date '+%Y-%m-%d %H:%M:%S') | $label | $cmd" >> "$HISTORY_FILE"
+    #     fi
+    # fi
+
+    # Menu loop
+    while true; do
+        show_menu
+        echo
+        read -rp "Select option(s) (e.g., 1 3 or a/r/e/o/q): " -a selection
+
+        case "${selection[0]}" in
+            q) echo -e "${YELLOW}Goodbye!${RESET}"; break ;;
+            a) add_command ;;
+            r) remove_command ;;
+            e) edit_command ;;
+            o) reorder_command ;;
+            *)
+                run_commands "${selection[@]}"
+                ;;
+        esac
+    done
+}
+
+main
